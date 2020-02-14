@@ -1,13 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.IO.Packaging;
-using System.Linq;
 using System.Net;
 using System.Net.Mime;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
 using AngleSharp;
 using AngleSharp.Dom;
@@ -18,21 +14,10 @@ namespace Zakupki
 {
     internal class OrderService : IDisposable
     {
-        private const string BASE_URL = "https://zakupki.gov.ru/epz";
 
-        private const string SEARCH_ORDER = "/order/extendedsearch/results.html";
-        private const string ORDER_DOCUMENTS = "/order/notice/ea44/view/documents.html";
-        private const string ORDER_RESULTS = "/order/notice/rpec/search-results.html";
-
-        private const string REG_NUMBER_PARAM = "regNumber";
-        private const string ORDER_NUMBER_PARAM = "orderNum";
 
         private readonly IBrowsingContext _browsingContext;
         private WebClient _webClient;
-
-        private readonly string _searchAddressPattern = $"{BASE_URL}{SEARCH_ORDER}?{{0}}&recordsPerPage=_500&fz44=on&sortBy=PUBLISH_DATE&publishDateFrom=01.01.2018";
-        private readonly string _orderResultAddressPattern = $"{BASE_URL}{ORDER_RESULTS}?{ORDER_NUMBER_PARAM}={{0}}";
-        private readonly string _orderDocumentsAddressPattern = $"{BASE_URL}{ORDER_DOCUMENTS}?{REG_NUMBER_PARAM}={{0}}";
 
         public event EventHandler<string> BrowsePage;
 
@@ -44,7 +29,7 @@ namespace Zakupki
 
         public Order[] SearchOrders(string searchParameter)
         {
-            string searchAddress = string.Format(_searchAddressPattern, searchParameter);
+            string searchAddress = string.Format(ZakupkiGovRuAddresses.searchAddressPattern, searchParameter);
             BrowsePage(this, searchAddress);
             IDocument document = _browsingContext.OpenAsync(searchAddress).Result;
             IHtmlCollection<IElement> cells = document.QuerySelectorAll(".search-registry-entry-block");
@@ -89,7 +74,7 @@ namespace Zakupki
             if (order == null)
                 return;
 
-            string orderResultAdress = string.Format(_orderResultAddressPattern, order.Number);
+            string orderResultAdress = string.Format(ZakupkiGovRuAddresses.orderResultAddressPattern, order.Number);
             BrowsePage(this, orderResultAdress);
             IDocument document = _browsingContext.OpenAsync(orderResultAdress).Result;
 
@@ -108,7 +93,7 @@ namespace Zakupki
             if (_webClient == null)
                 _webClient = new WebClient();
 
-            string orderDocumentsAddress = string.Format(_orderDocumentsAddressPattern, order.Number);
+            string orderDocumentsAddress = string.Format(ZakupkiGovRuAddresses.orderDocumentsAddressPattern, order.Number);
             BrowsePage(this, orderDocumentsAddress);
             IDocument document = _browsingContext.OpenAsync(orderDocumentsAddress).Result;
 
@@ -156,17 +141,21 @@ namespace Zakupki
         }
         private static void ProcessDocxFile(Order order, string filePath)
         {
-            using (WordprocessingDocument package = WordprocessingDocument.Open(filePath, true))
+            try
             {
-                PackageProperties fileProperties = package.PackageProperties;
-                order.NoticeCreator = fileProperties.Creator;
-                order.NoticeSubject = fileProperties.Subject;
-                order.NoticeTitle = fileProperties.Title;
-                order.NoticeLastAuthor = fileProperties.LastModifiedBy;
-                order.NoticeDatePrinted = fileProperties.LastPrinted.ToString();
-                order.NoticeDateCreated = fileProperties.Created.ToString();
-                order.NoticeDateSaved = fileProperties.Modified.ToString();
+                using (WordprocessingDocument package = WordprocessingDocument.Open(filePath, true))
+                {
+                    PackageProperties fileProperties = package.PackageProperties;
+                    order.NoticeCreator = fileProperties.Creator;
+                    order.NoticeSubject = fileProperties.Subject;
+                    order.NoticeTitle = fileProperties.Title;
+                    order.NoticeLastAuthor = fileProperties.LastModifiedBy;
+                    order.NoticeDatePrinted = fileProperties.LastPrinted.ToString();
+                    order.NoticeDateCreated = fileProperties.Created.ToString();
+                    order.NoticeDateSaved = fileProperties.Modified.ToString();
+                }
             }
+            catch { }
         }
         private static void ProcessDocFile(Order order, string filePath)
         {
