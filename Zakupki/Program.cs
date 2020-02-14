@@ -1,16 +1,10 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Net;
 using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
-using AngleSharp;
-using AngleSharp.Dom;
-using Microsoft.WindowsAPICodePack.Shell.PropertySystem;
+using CsvHelper;
 
 namespace Zakupki
 {
@@ -18,140 +12,128 @@ namespace Zakupki
     {
         static void Main(string[] args)
         {
-            string BASE_URL = "https://zakupki.gov.ru/epz";
+            Console.WriteLine("Введите параметр поиска, например ИНН, в виде:");
+            Console.WriteLine("для простого поиска \"searchString=7842006310\"");
+            Console.WriteLine("для поиска по участнику закупки \"participantName=7842148635\"");
 
-            string SEARCH_ORDER = "/order/extendedsearch/results.html";
-            string SEARCH_TEXT_PARAM = "searchString";
-
-            string ORDER_DOCUMENTS = "/order/notice/ea44/view/documents.html";
-            string ORDER_NUMBER_PARAM = "regNumber";
-
-
-            string tempFolder = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-            Directory.CreateDirectory(tempFolder);
-            Process.Start(tempFolder);
-            string logFile = Path.Combine(tempFolder, "log.txt");
-
-            IConfiguration config = Configuration.Default.WithDefaultLoader();
-
-            string searchAddress = $"{BASE_URL}{SEARCH_ORDER}?{SEARCH_TEXT_PARAM}=7825660628&recordsPerPage=_500&fz44=on&sortBy=UPDATE_DATE";
-            IBrowsingContext context = BrowsingContext.New(config);
-            IDocument document = context.OpenAsync(searchAddress).Result;
-
-            IHtmlCollection<IElement> cells = document.QuerySelectorAll(".search-registry-entry-block");
-            Order[] orders = new Order[cells.Length];
-            for (int i = 0; i < cells.Length; i++)
+            string searchParameter;
+            bool isParameterValid = false;
+            do
             {
-                IElement cell = cells[i];
-                orders[i] = new Order
-                {
-                    Number = Regex.Replace(cell.QuerySelector(".registry-entry__header-mid__number a")?.TextContent?.Replace("\n", "").Replace("№", ""), @"\s+", " ").Trim(),
-                    Type = Regex.Replace(cell.QuerySelector(".registry-entry__header-top__title")?.TextContent?.Replace("\n", ""), @"\s+", " ").Trim(),
-                    State = Regex.Replace(cell.QuerySelector(".registry-entry__header-mid__title")?.TextContent?.Replace("\n", ""), @"\s+", " ").Trim(),
-                    Content = Regex.Replace(cell.QuerySelector(".registry-entry__body-value")?.TextContent?.Replace("\n", ""), @"\s+", " ").Trim(),
-                    Customer = Regex.Replace(cell.QuerySelector(".registry-entry__body-href a")?.TextContent?.Replace("\n", ""), @"\s+", " ").Trim(),
-                    Price = Regex.Replace(cell.QuerySelector(".price-block__value")?.TextContent?.Replace("\n", ""), @"\s+", " ").Trim(),
-                };
+                searchParameter = Console.ReadLine();
 
-                IHtmlCollection<IElement> datas = cell.QuerySelectorAll(".data-block__value");
-                if (datas != null && datas.Length > 1)
+                isParameterValid = !string.IsNullOrEmpty(searchParameter) && searchParameter.Contains("=");
+                if (!isParameterValid)
                 {
-                    orders[i].StartedAt = datas[0].TextContent;
-                    orders[i].UpdatedAt = datas[1].TextContent;
+                    Console.WriteLine("Параметр поиска некорректный, попробуйте ещё раз");
                 }
             }
+            while (!isParameterValid);
 
-            using (var client = new WebClient())
+            Console.WriteLine();
+
+            using (OrderService service = new OrderService())
             {
+                service.BrowsePage += (source, adress) => Console.WriteLine($"Открываем страницу \"{adress}\"");
 
+                Order[] orders = service.SearchOrders(searchParameter);
 
-                string orderDocumentsAddress = $"{BASE_URL}{ORDER_DOCUMENTS}?{ORDER_NUMBER_PARAM}=";
-                foreach (var order in orders)
+                Console.WriteLine($"{orders.Length} orders was found");
+                Console.WriteLine();
+
+                if (orders.Length > 0)
                 {
-                    Console.WriteLine($"Order number: {order.Number}");
-                    File.AppendAllText(logFile, $"Order number: {order.Number}{Environment.NewLine}");
+                    string tempFolder = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
 
-                    Console.WriteLine($"Order content: {order.Content}");
-                    File.AppendAllText(logFile, $"Order content: {order.Content}{Environment.NewLine}");
+                    Directory.CreateDirectory(tempFolder);
+                    Process.Start(tempFolder);
 
-                    Console.WriteLine($"Order start date: {order.StartedAt}");
-                    File.AppendAllText(logFile, $"Order start date: {order.StartedAt}{Environment.NewLine}");
+                    string logFile = Path.Combine(tempFolder, "result.csv");
 
-                    Console.WriteLine($"Order update date: {order.UpdatedAt}");
-                    File.AppendAllText(logFile, $"Order update date: {order.UpdatedAt}{Environment.NewLine}");
-
-                    Console.WriteLine($"Order price: {order.Price}");
-                    File.AppendAllText(logFile, $"Order price: {order.Price}{Environment.NewLine}");
-
-                    Console.WriteLine($"Order type: {order.Type}");
-                    File.AppendAllText(logFile, $"Order type: {order.Type}{Environment.NewLine}");
-
-                    Console.WriteLine($"Order state: {order.State}");
-                    File.AppendAllText(logFile, $"Order state: {order.State}{Environment.NewLine}");
-
-                    Console.WriteLine($"Order customer: {order.Customer}");
-                    File.AppendAllText(logFile, $"Order customer: {order.Customer}{Environment.NewLine}");
-
-                    document = context.OpenAsync($"{orderDocumentsAddress}{order.Number}").Result;
-                    string docReference = document.QuerySelector(".notice-documents .attachment .w-wrap-break-word a")?.GetAttribute("href");
-                    if (docReference != null)
+                    using (StreamWriter streamWriter = new StreamWriter(logFile, false, Encoding.UTF8))
+                    using (CsvWriter csvWriter = new CsvWriter(streamWriter, CultureInfo.InvariantCulture))
                     {
-                        client.Headers.Add("user-agent", "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.2; .NET CLR 1.0.3705;)");
-                        var data = client.DownloadData(docReference);
+                        csvWriter.Configuration.Delimiter = ";";
+                        csvWriter.WriteHeader(typeof(Order));
+                        csvWriter.NextRecord();
 
-                        string fileExtension = "tmp";
-                        if (!string.IsNullOrEmpty(client.ResponseHeaders["Content-Disposition"]))
+                        foreach (Order order in orders)
                         {
-                            string fileName = client.ResponseHeaders["Content-Disposition"].Substring(client.ResponseHeaders["Content-Disposition"].IndexOf("filename=") + 9).Replace("\"", "");
-                            fileExtension = Path.GetExtension(fileName);
-                        }
-                        string tempPath = Path.Combine(tempFolder, Path.ChangeExtension(order.Number, fileExtension));
-
-                        File.WriteAllBytes(tempPath, data);
-
-
-                        foreach (var prop in new ShellPropertyCollection(tempPath))
-                        {
-                            if (prop.CanonicalName == "System.Author")
+                            if (order != null)
                             {
-
-                                string[] authors = prop.ValueAsObject as string[];
-                                if (authors != null)
+                                service.GetOrderResult(order);
+                                var orderNoticeFile = service.DownloadOrderNotice(order, tempFolder);
+                                if (orderNoticeFile != null)
                                 {
-                                    Console.WriteLine($"Authors: {string.Join("; ", authors)}");
-                                    File.AppendAllText(logFile, $"Authors: {string.Join("; ", authors)}{ Environment.NewLine}");
+                                    service.GetOrderNoticeDetails(order, orderNoticeFile);
                                 }
+
+                                WriteOrderToConsole(order);
+
+                                csvWriter.WriteRecord(order);
+                                csvWriter.NextRecord();
                             }
                         }
                     }
-
-                    Console.WriteLine();
-                    Console.WriteLine();
-                    File.AppendAllText(logFile, Environment.NewLine + Environment.NewLine);
                 }
             }
+            Console.WriteLine("Приложение закончило работу, нажмите любую кнопку чтобы выйти...");
+            Console.ReadKey();
         }
-    }
-    public class Order
-    {
-        public string Number { get; set; }
-        public string Type { get; set; }
-        public string State { get; set; }
-        public string Content { get; set; }
-        public string Customer { get; set; }
-        public string Price { get; set; }
-        public string StartedAt { get; set; }
-        public string UpdatedAt { get; set; }
-        public string DocumentCreator { get; set; }
-    }
 
-    class MyWebClient : WebClient
-    {
-        protected override WebRequest GetWebRequest(Uri address)
+        private static void WriteOrderToConsole(Order order)
         {
-            HttpWebRequest request = base.GetWebRequest(address) as HttpWebRequest;
-            request.AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip;
-            return request;
+            Console.WriteLine();
+            Console.WriteLine($"Номер закупки: {order.Number}");
+            Console.WriteLine($"Размещено: {order.StartedAt.ToShortDateString()}");
+            Console.WriteLine($"Обновлено: {order.UpdatedAt.ToShortDateString()}");
+            Console.WriteLine($"Статус: {order.State}");
+            Console.WriteLine($"Объект закупки: {order.Content}");
+            Console.WriteLine($"Заказчик: {order.Customer}");
+            Console.WriteLine($"Начальная цена: {order.StartPrice}");
+
+            if (order.ResultPrice != null)
+                Console.WriteLine($"Цена контракта: {order.ResultPrice}");
+
+            if (order.Supplier != null)
+                Console.WriteLine($"Поставщик: {order.Supplier}");
+
+            Console.WriteLine($"Тип: {order.Type}");
+
+            if (order.NoticeName != null)
+                Console.WriteLine($"Title: {order.NoticeName}");
+
+            if (order.NoticeExtension != null)
+                Console.WriteLine($"Extension: {order.NoticeExtension}");
+
+            if (order.NoticeCompany != null)
+                Console.WriteLine($"NoticeCompany: {order.NoticeCompany}");
+
+            if (order.NoticeCreator != null)
+                Console.WriteLine($"Authors: {order.NoticeCreator}");
+
+            if (order.NoticeLastAuthor != null)
+                Console.WriteLine($"LastAuthor: {order.NoticeLastAuthor}");
+
+            if (order.NoticeDateCreated != null)
+                Console.WriteLine($"DateCreated: {order.NoticeDateCreated}");
+
+            if (order.NoticeDateSaved != null)
+                Console.WriteLine($"DateSaved: {order.NoticeDateSaved}");
+
+            if (order.NoticeDatePrinted != null)
+                Console.WriteLine($"DatePrinted: {order.NoticeDatePrinted}");
+
+            if (order.NoticeTemplate != null)
+                Console.WriteLine($"Template: {order.NoticeTemplate}");
+
+            if (order.NoticeSubject != null)
+                Console.WriteLine($"Subject: {order.NoticeSubject}");
+
+            if (order.NoticeTitle != null)
+                Console.WriteLine($"Title: {order.NoticeTitle}");
+
+            Console.WriteLine();
         }
     }
 }
